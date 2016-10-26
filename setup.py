@@ -21,12 +21,12 @@ setup_options = dict(
     long_description=open('README.md').read(),
     author='Benn Linger',
     url='https://github.com/moduspwnens/boa-nimbus',
-    py_modules=["cli"],
     packages=find_packages(exclude=['tests*']),
     install_requires=requires,
+    include_package_data=True,
     entry_points = '''
         [console_scripts]
-        boa-nimbus=cli:main
+        boa-nimbus=boa_nimbus.cli:main
     ''',
     classifiers=(
         'Development Status :: 2 - Pre-Alpha',
