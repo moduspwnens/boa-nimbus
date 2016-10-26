@@ -4,28 +4,60 @@ from __future__ import print_function
 import os
 import sys
 import shutil
-import argparse
 import time
 import hashlib
 import subprocess
 import json
+import click
 import boto3
 import botocore
+import yaml
 
+try:
+    from urllib import quote_plus
+except:
+    from urllib.parse import quote_plus
+
+assume_default_aws_region = "us-east-1"
 exclude_files = [".DS_Store"]
 
-deploy_dir = os.path.join(os.getcwd(), "cloudformation-deploy")
-build_dir = os.path.join(os.getcwd(), "build", "cloudformation-deploy")
+deploy_dir = os.path.join(os.getcwd(), "boa-nimbus")
+build_dir = os.path.join(os.getcwd(), "build", "boa-nimbus")
 self_dir = os.path.dirname(os.path.realpath(__file__))
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--stack-name", default="project-bucket1", help="Name for the CloudFormation stack.")
-parser.add_argument("--clean", action="store_true", help="Remove all build artifacts first.")
+built_zip_hash_map = {}
 
 def verify_deploy_dir_exists():
     if not os.path.exists(deploy_dir):
-        # TODO: Point to a URL explaining how to lay out the files for this utility.
-        raise Exception("No directory found at {}.".format(deploy_dir))
+        raise click.ClickException((
+            "No directory found at {}." "\n"
+            "For instructions how to set up the correct directory structure, see the documentation here:" "\n"
+            " * https://github.com/moduspwnens/boa-nimbus#how-to-use" "\n"
+            "Please set up the correct directory structure and try again."
+        ).format(deploy_dir))
+
+def verify_aws_credentials_and_configuration():
+    
+    # Verify credentials are set.
+    try:
+        boto3.client('sts').get_caller_identity()
+    except botocore.exceptions.NoCredentialsError:
+        raise click.ClickException((
+            "Unable to locate AWS credentials." "\n"
+            "This utility uses the same credential finding process as the AWS Command Line Interface (CLI), which allows multiple options for configuration." "\n"
+            "See the documentation here:" "\n"
+            "  * http://docs.aws.amazon.com/cli/latest/userguide/cli-chap-getting-started.html" "\n"
+            "Please ensure your credentials are configured in one of the ways described there and try again."
+        ))
+    
+    # Verify region is set.
+    try:
+        boto3.client('cloudformation')
+    except botocore.exceptions.NoRegionError:
+        click.echo('No AWS region specified. Assuming {}.'.format(assume_default_aws_region))
+        os.environ['AWS_DEFAULT_REGION'] = assume_default_aws_region
+    
+    
 
 # http://stackoverflow.com/questions/600268/mkdir-p-functionality-in-python/600612#600612
 def mkdir_p(path):
@@ -72,10 +104,9 @@ def directory_sha1_hash(directory):
     
     return SHAhash.hexdigest()
 
-cloudformation_client = boto3.client("cloudformation")
-
 def deploy_or_update_stack(stack_name):
-    print("Deploying bucket.")
+    
+    cloudformation_client = boto3.client("cloudformation")
     
     last_status = None
     stack_id = None
@@ -83,7 +114,25 @@ def deploy_or_update_stack(stack_name):
     
     template_body = open(os.path.join(self_dir, "bucket-stack-template.yaml")).read()
     
+    stack_already_exists = False
+    
     try:
+        response = cloudformation_client.describe_stacks(
+            StackName = stack_name
+        )
+        stack_already_exists = True
+        
+        this_stack = response["Stacks"][0]
+        stack_id = this_stack["StackId"]
+        last_status = this_stack["StackStatus"]
+        
+    except botocore.exceptions.ClientError as e:
+        if "does not exist" not in e.response['Error']['Message']:
+            raise
+    
+    if not stack_already_exists:
+        click.echo("Deploying stack.")
+        
         response = cloudformation_client.create_stack(
             StackName = stack_name,
             TemplateBody = template_body,
@@ -92,10 +141,8 @@ def deploy_or_update_stack(stack_name):
         stack_id = response["StackId"]
         last_status = "CREATE_IN_PROGRESS"
         
-    except botocore.exceptions.ClientError as e:
-        if e.response["Error"]["Code"] != "AlreadyExistsException":
-            raise
-        
+    else:
+        click.echo("Updating stack.")
         try:
             response = cloudformation_client.update_stack(
                 StackName = stack_name,
@@ -105,14 +152,7 @@ def deploy_or_update_stack(stack_name):
         except botocore.exceptions.ClientError as e:
             if not (e.response["Error"]["Code"] == "ValidationError" and "No updates are to be performed." in e.response["Error"]["Message"]):
                 raise
-            
-        response = cloudformation_client.describe_stacks(
-            StackName = stack_name
-        )
-        
-        this_stack = response["Stacks"][0]
-        stack_id = this_stack["StackId"]
-        last_status = this_stack["StackStatus"]
+            click.echo("No updates necessary.")
     
     s3_bucket_name = None
     
@@ -131,7 +171,7 @@ def deploy_or_update_stack(stack_name):
     
         last_status = this_stack["StackStatus"]
     
-        print(" > Stack status: {}".format(last_status))
+        click.echo(" > Stack status: {}".format(last_status))
     
         if last_status not in expected_wait_statuses:
             break
@@ -139,7 +179,7 @@ def deploy_or_update_stack(stack_name):
         time.sleep(10)
 
     if last_status not in [ "CREATE_COMPLETE", "UPDATE_COMPLETE" ]:
-        raise Exception("Stack reached unexpected status: {}".format(last_status))
+        raise click.ClickException("Stack reached unexpected status: {}".format(last_status))
     
     for each_output_pair in this_stack.get("Outputs", []):
         if each_output_pair["OutputKey"] == "S3Bucket":
@@ -153,8 +193,10 @@ def build_and_upload_lambda_packages(s3_bucket_name):
     lambda_src_dir = os.path.join(deploy_dir, "lambda")
     
     if not os.path.exists(lambda_src_dir):
-        print("No AWS Lambda sources to upload found in {}.".format(s3_src_dir))
+        click.echo("No AWS Lambda sources to upload found in {}.".format(s3_src_dir))
         return
+    
+    lambda_zips_to_upload = []
     
     for (each_path, each_dir_list, each_file_list) in os.walk(lambda_src_dir):
         if each_path == lambda_src_dir:
@@ -182,11 +224,23 @@ def build_and_upload_lambda_packages(s3_bucket_name):
         
         if os.path.exists(zip_output_path):
             if each_function_previous_build_metadata["source"] == source_dir_hash:
-                if file_sha256_checksum_base64(zip_output_path) == each_function_previous_build_metadata["zip"]:
-                    print("{} already built.".format(each_function_name))
+                existing_zip_hash = file_sha256_checksum_base64(zip_output_path)
+                if existing_zip_hash == each_function_previous_build_metadata["zip"]:
+                    click.echo("{} already built.".format(each_function_name))
+                    
+                    s3_object_key = "lambda/{}.zip".format(each_function_name)
+                    
+                    built_zip_hash_map[s3_object_key] = existing_zip_hash
+                    
+                    lambda_zips_to_upload.append((
+                        s3_bucket_name,
+                        s3_object_key,
+                        zip_output_path
+                    ))
+                    
                     continue
         
-        print("Building Lambda function: {}".format(each_function_name))
+        click.echo("Building Lambda function: {}".format(each_function_name))
         
         function_build_dir = os.path.join(build_dir, "lambda", each_function_name)
     
@@ -199,20 +253,25 @@ def build_and_upload_lambda_packages(s3_bucket_name):
     
         if os.path.exists(pip_requirements_path):
             
-            print("Installing dependencies.")
-            p = subprocess.Popen(
-                ["pip", "install", "-r", pip_requirements_path, "-t", function_build_dir],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
+            click.echo("Installing dependencies.")
+            try:
+                p = subprocess.Popen(
+                    ["pip", "install", "-r", pip_requirements_path, "-t", function_build_dir],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+            except OSError as e:
+                if e.errno == 2:
+                    raise click.ClickException("Pip not found. Is it installed?")
+                else:
+                    raise
         
             exit_code = p.wait()
             p_stdout, p_stderr = p.communicate()
         
             if exit_code != 0:
-                print("pip invocation failed.", file=sys.stderr)
-                print(p_stderr, file=sys.stderr)
-                sys.exit(1)
+                click.echo(p_stderr, err=True)
+                raise click.ClickException("Pip returned an error when trying to install dependencies.")
     
         build_zip_path = os.path.join(build_dir, "lambda", each_function_name)
         if os.path.exists("{}.zip".format(build_zip_path)):
@@ -220,26 +279,39 @@ def build_and_upload_lambda_packages(s3_bucket_name):
     
         shutil.make_archive(build_zip_path, "zip", function_build_dir)
         
+        new_zip_hash = file_sha256_checksum_base64(zip_output_path)
+        
         new_build_metadata = {
             "source": source_dir_hash,
-            "zip": file_sha256_checksum_base64(zip_output_path)
+            "zip": new_zip_hash
         }
         
         open(each_function_build_metadata_file_path, "w").write(json.dumps(new_build_metadata, indent=4))
         
         shutil.rmtree(function_build_dir)
     
-        print("Successfully built Lambda function: {}.".format(each_function_name))
+        click.echo("Successfully built Lambda function: {}.".format(each_function_name))
+        
+        s3_object_key = "lambda/{}.zip".format(each_function_name)
+        
+        lambda_zips_to_upload.append((
+            s3_bucket_name,
+            s3_object_key,
+            zip_output_path
+        ))
+        
+        built_zip_hash_map[s3_object_key] = new_zip_hash
+        
     
-
-s3_client = boto3.client("s3")
+    for each_lambda_zip_tuple in lambda_zips_to_upload:
+        upload_s3_object_if_unchanged(*each_lambda_zip_tuple)
 
 def upload_plain_s3_objects(s3_bucket_name):
     
     s3_src_dir = os.path.join(deploy_dir, "s3")
     
     if not os.path.exists(s3_src_dir):
-        print("No static S3 objects to upload found in {}.".format(s3_src_dir))
+        click.echo("No static S3 objects to upload found in {}.".format(s3_src_dir))
         return
     
     for (each_path, each_dir_list, each_file_list) in os.walk(s3_src_dir):
@@ -261,6 +333,8 @@ def upload_s3_object_if_unchanged(s3_bucket_name, s3_key, file_path):
     should_upload_file = False
     local_file_hash = file_sha256_checksum_base64(file_path)
     
+    s3_client = boto3.client("s3")
+    
     try:
         response = s3_client.head_object(
             Bucket = s3_bucket_name,
@@ -278,7 +352,7 @@ def upload_s3_object_if_unchanged(s3_bucket_name, s3_key, file_path):
             raise
     
     if should_upload_file:
-        print("Uploading {}...".format(s3_key))
+        click.echo("Uploading {}...".format(s3_key))
         s3 = boto3.resource('s3')
         bucket = s3.Bucket(s3_bucket_name)
         
@@ -292,24 +366,218 @@ def upload_s3_object_if_unchanged(s3_bucket_name, s3_key, file_path):
                     }
                 }
             )
-        
 
-def main():
-    args = parser.parse_args()
+def clean_build_artifacts(ctx, param, value):
+    if not value or ctx.resilient_parsing:
+        return
     
-    if args.clean and os.path.exists(build_dir):
+    if os.path.exists(build_dir):
         shutil.rmtree(build_dir)
+
+@click.version_option(version=open(os.path.join(self_dir, 'version.txt')).read())
+
+@click.group()
+@click.option('--clean', is_flag=True, callback=clean_build_artifacts, expose_value=False, is_eager=True)
+@click.option('--verbose', is_flag=True, default=False)
+@click.option('--region', help='AWS region to use.')
+@click.option('--profile', help='AWS CLI profile to use.')
+@click.pass_context
+def cli(ctx, verbose, region, profile):
+    
+    if region is not None:
+        os.environ['AWS_DEFAULT_REGION'] = region
+    
+    if profile is not None:
+        os.environ['AWS_DEFAULT_PROFILE'] = profile
+    
+    ctx.obj = {
+        'VERBOSE': verbose
+    }
+
+@click.command()
+@click.option('--stack-name', help='Name of CloudFormation stack.')
+@click.option('--project-stack-name', help='For updates: Name of main project\'s CloudFormation stack.')
+@click.option('--stack-name-parameter-key', default='LambdaPackageStackName', help='For updates: Name of parameter in the main project\'s template that specifies the stack deployed by this CLI.')
+@click.option('--clean', is_flag=True, callback=clean_build_artifacts, expose_value=False, is_eager=True)
+@click.pass_context
+def deploy(ctx, stack_name, project_stack_name, stack_name_parameter_key):
+    
+    if stack_name is None and project_stack_name is None:
+        raise click.ClickException('Missing option \"--stack-name\"')
+    
+    verify_aws_credentials_and_configuration()
+    
+    cloudformation_client = boto3.client('cloudformation')
+    
+    project_stack = None
+    
+    if stack_name is None:
+        # Determine stack_name from project_stack_name.
+        response = cloudformation_client.describe_stacks(
+            StackName = project_stack_name
+        )
+        
+        project_stack = response['Stacks'][0]
+        
+        for each_parameter_set in project_stack.get('Parameters', []):
+            if each_parameter_set['ParameterKey'] == stack_name_parameter_key:
+                stack_name = each_parameter_set['ParameterValue']
+                break
+        
+        if stack_name is None:
+            raise click.ClickException('Unable to find expected parameter ({}) in stack: {}.'.format(
+                stack_name_parameter_key,
+                project_stack_name
+            ))
+    
     
     verify_deploy_dir_exists()
     
     if not os.path.exists(build_dir):
         mkdir_p(build_dir)
     
-    s3_bucket_name = deploy_or_update_stack(args.stack_name)
+    s3_bucket_name = deploy_or_update_stack(stack_name)
     
     build_and_upload_lambda_packages(s3_bucket_name)
     
     upload_plain_s3_objects(s3_bucket_name)
+    
+    if project_stack_name is not None:
+        click.echo('Updating Lambda functions in project stack: {}.'.format(project_stack_name))
+        
+        lambda_client = boto3.client('lambda')
+        
+        response = cloudformation_client.get_template(
+            StackName = project_stack['StackId']
+        )
+        template_string = response['TemplateBody']
+        
+        
+        template = None
+        try:
+            template = json.loads(template_string)
+        except:
+            try:
+                template = yaml.load(template_string)
+            except:
+                raise click.ClickException('Unable to parse CloudFormation template of {}.'.format(project_stack_name))
+        
+        paginator = cloudformation_client.get_paginator('list_stack_resources')
+        response_iterator = paginator.paginate(
+            StackName = project_stack['StackId']
+        )
+        
+        lambda_function_logical_physical_map = {}
+        
+        for each_response in response_iterator:
+            for each_summary in each_response.get('StackResourceSummaries', []):
+                if each_summary['ResourceType'] == 'AWS::Lambda::Function':
+                    lambda_function_logical_physical_map[each_summary['LogicalResourceId']] = each_summary['PhysicalResourceId']
+        
+        for each_lambda_logical_id in lambda_function_logical_physical_map.keys():
+            each_template_resource = template['Resources'][each_lambda_logical_id]
+            each_code_resource = each_template_resource['Properties']['Code']
+            
+            if 'S3Bucket' not in each_code_resource:
+                # This is an inline Lambda function unrelated to this CLI's resources.
+                continue
+            
+            if stack_name_parameter_key not in json.dumps(each_code_resource['S3Bucket']):
+                # This probably points to another unrelated bucket.
+                continue
+            
+            source_s3_key = each_code_resource['S3Key']
+            each_lambda_function_name = lambda_function_logical_physical_map[each_lambda_logical_id]
+            
+            
+            
+            response = lambda_client.get_function(
+                FunctionName = each_lambda_function_name
+            )
+            
+            existing_code_hash = response['Configuration']['CodeSha256']
+            
+            latest_code_hash = built_zip_hash_map[source_s3_key]
+            
+            update_necessary = (existing_code_hash != latest_code_hash)
+            
+            if update_necessary:
+                click.echo('Updating code of {} ({}).'.format(
+                    each_lambda_logical_id,
+                    each_lambda_function_name
+                ))
+            
+                lambda_client.update_function_code(
+                    FunctionName = each_lambda_function_name,
+                    S3Bucket = s3_bucket_name,
+                    S3Key = source_s3_key
+                )
+            else:
+                click.echo('Code already at latest for {} ({}).'.format(
+                    each_lambda_logical_id,
+                    each_lambda_function_name
+                ))
+    
+
+cli.add_command(deploy)
+
+@click.command()
+@click.option('--stack-name', help='Name of CloudFormation stack.', required=True)
+@click.pass_context
+def destroy(ctx, stack_name):
+    
+    verify_aws_credentials_and_configuration()
+    
+    cloudformation_client = boto3.client("cloudformation")
+    
+    try:
+        response = cloudformation_client.describe_stacks(
+            StackName = stack_name
+        )
+    except botocore.exceptions.ClientError as e:
+        if "does not exist" not in e.response['Error']['Message']:
+            raise
+        raise click.UsageError("No running stack found named \"{}\".".format(stack_name))
+    
+    stack_id = response["Stacks"][0]["StackId"]
+    
+    click.echo("Deleting stack.")
+    
+    cloudformation_client.delete_stack(
+        StackName = stack_id
+    )
+    
+    last_status = "DELETE_IN_PROGRESS"
+    
+    while last_status == "DELETE_IN_PROGRESS":
+        time.sleep(10)
+        
+        response = cloudformation_client.describe_stacks(
+            StackName = stack_id
+        )
+        
+        last_status = response["Stacks"][0]["StackStatus"]
+        
+        click.echo(" > Stack status: {}".format(last_status))
+    
+    if last_status != "DELETE_COMPLETE":
+        
+        stack_region = stack_id.split(":")[3]
+        
+        events_page_link = "https://console.aws.amazon.com/cloudformation/home?region={}#/stacks?stackId={}&tab=events&filter=active".format(
+            quote_plus(stack_region),
+            quote_plus(stack_id)
+        )
+        
+        raise click.ClickException((
+            "Stack deletion failed. Entered unexpected state ({})." "\n"
+            "View stack events here:" "\n"
+            " * {}".format(last_status, events_page_link)
+        ))
+    
+    click.echo("Stack deleted successfully.")
+
+cli.add_command(destroy)
 
 if __name__ == "__main__":
     main()

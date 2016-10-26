@@ -1,1 +1,2 @@
 include boa_nimbus/bucket-stack-template.yaml
+include boa_nimbus/version.txt
