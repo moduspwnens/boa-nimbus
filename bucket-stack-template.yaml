@@ -1,0 +1,179 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: An S3 bucket for hosting objects for another stack.
+Resources:
+  
+  #
+  #   S3 Bucket
+  #   
+  #   Hosts uploaded S3 objects (including packaged Lambda functions).
+  #
+  
+  MainBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+  
+  #
+  #   Stack Cleanup
+  #   
+  #   This function performs basic setup and cleanup functionality when the 
+  #   stack is deleted.
+  #   
+  #   On delete:
+  #     - Clears out shared S3 bucket
+  #     - Deletes SNS topics
+  #
+  
+  StackCleanupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Clears out the stack's S3 bucket
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role:
+        Fn::GetAtt:
+        - StackCleanupFunctionRole
+        - Arn
+      Code:
+        ZipFile: |-
+          from __future__ import print_function
+
+          import json
+          import boto3, botocore
+          import cfnresponse
+
+          class LambdaHandler(object):
+              
+              def __init__(self, context):
+                  pass
+  
+              def handle_event(self, event, context):
+                  print("Event: {}".format(json.dumps(event)))
+        
+                  request_type = event.get("RequestType")
+        
+                  if request_type == "Delete":
+                      self.handle_cleanup_event(event, context)
+        
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, None)
+        
+                  return {}
+    
+              def handle_cleanup_event(self, event, context):
+        
+                  s3_client = boto3.client("s3")
+                  sns_client = boto3.client("sns")
+                  sqs_client = boto3.client("sqs")
+                  s3_bucket_name = event["ResourceProperties"]["Bucket"]
+        
+                  paginator = s3_client.get_paginator("list_objects_v2")
+        
+                  response_iterator = paginator.paginate(
+                      Bucket = s3_bucket_name
+                  )
+        
+                  for each_list_response in response_iterator:
+                    keys_to_delete = []
+          
+                    for each_item in each_list_response.get("Contents", []):
+                        keys_to_delete.append(each_item["Key"])
+          
+                    if len(keys_to_delete) == 0:
+                        print("Last request for objects in {} returned none.".format(
+                            s3_bucket_name
+                        ))
+                        break
+                    
+                    print("Deleting {} object(s) from {}.".format(
+                        len(keys_to_delete),
+                        s3_bucket_name
+                    ))
+          
+                    s3_client.delete_objects(
+                        Bucket = s3_bucket_name,
+                        Delete = {
+                            "Objects": list({"Key": x} for x in keys_to_delete)
+                        }
+                    )
+          
+                    print("Object(s) deleted.")
+
+          handler_object = None
+          def lambda_handler(event, context):
+              global handler_object
+    
+              if handler_object is None:
+                  handler_object = LambdaHandler(context)
+    
+              return handler_object.handle_event(event, context)
+              
+      Runtime: python2.7
+      Timeout: '300'
+  
+  StackCleanupFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+  
+  StackCleanupFunctionRoleActions:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: StackCleanupFunctionRoleActions
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          Resource:
+            Fn::Sub: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${StackCleanupFunction}:log-stream:*
+        - Effect: Allow
+          Action:
+          - s3:DeleteObject
+          Resource:
+            Fn::Sub: arn:aws:s3:::${MainBucket}/*
+        - Effect: Allow
+          Action:
+          - s3:ListBucket
+          Resource:
+            Fn::Sub: arn:aws:s3:::${MainBucket}
+      Roles:
+      - Ref: StackCleanupFunctionRole
+  
+  StackCleanupFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Sub: /aws/lambda/${StackCleanupFunction}
+  
+  StackCleanupInvocation:
+    Type: Custom::StackCleanupInvocation
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+        - StackCleanupFunction
+        - Arn
+      Bucket:
+        Ref: MainBucket
+    DependsOn:
+    - StackCleanupFunctionLogGroup
+    - StackCleanupFunctionRoleActions
+      
+Outputs:
+  S3Bucket:
+    Value:
+      Ref: MainBucket
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-S3Bucket"
