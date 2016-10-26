@@ -294,8 +294,7 @@ def upload_s3_object_if_unchanged(s3_bucket_name, s3_key, file_path):
             )
         
 
-if __name__ == "__main__":
-    
+def main():
     args = parser.parse_args()
     
     if args.clean and os.path.exists(build_dir):
@@ -311,5 +310,7 @@ if __name__ == "__main__":
     build_and_upload_lambda_packages(s3_bucket_name)
     
     upload_plain_s3_objects(s3_bucket_name)
+
+if __name__ == "__main__":
+    main()
     
-    print("OK")
