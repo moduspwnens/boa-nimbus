@@ -8,6 +8,7 @@ import time
 import hashlib
 import subprocess
 import json
+import re
 import click
 import boto3
 import botocore
@@ -24,6 +25,8 @@ exclude_files = [".DS_Store"]
 deploy_dir = os.path.join(os.getcwd(), "boa-nimbus")
 build_dir = os.path.join(os.getcwd(), "build", "boa-nimbus")
 self_dir = os.path.dirname(os.path.realpath(__file__))
+mimes_lookup_string = open(os.path.join(self_dir, "mime.types.txt")).read()
+mimes_lookup_cache = {}
 
 built_zip_hash_map = {}
 
@@ -328,6 +331,17 @@ def upload_plain_s3_objects(s3_bucket_name):
                 each_file_path
             )
 
+def lookup_mime_type_for_extension(extension):
+    if extension not in mimes_lookup_cache:
+        m = re.search(r"^([^#][^\s]*).*\s{}($|\s)".format(extension), mimes_lookup_string, re.MULTILINE)
+        mime_value = None
+        if m is not None:
+            mime_value = m.group(1)
+        
+        mimes_lookup_cache[extension] = mime_value
+    
+    return mimes_lookup_cache[extension]
+
 def upload_s3_object_if_unchanged(s3_bucket_name, s3_key, file_path):
     
     should_upload_file = False
@@ -356,15 +370,23 @@ def upload_s3_object_if_unchanged(s3_bucket_name, s3_key, file_path):
         s3 = boto3.resource('s3')
         bucket = s3.Bucket(s3_bucket_name)
         
+        extra_args_dict = {
+            "Metadata": {
+                "sha256base64": local_file_hash
+            }
+        }
+        
+        try:
+            object_mime_type = lookup_mime_type_for_extension(file_path.split(".")[-1])
+            extra_args_dict["ContentType"] = object_mime_type
+        except:
+            pass
+        
         with open(file_path, 'rb') as data:
             bucket.upload_fileobj(
                 data,
                 s3_key,
-                ExtraArgs = {
-                    "Metadata": {
-                        "sha256base64": local_file_hash
-                    }
-                }
+                ExtraArgs = extra_args_dict
             )
 
 def clean_build_artifacts(ctx, param, value):
