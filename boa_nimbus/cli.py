@@ -9,6 +9,7 @@ import hashlib
 import subprocess
 import json
 import re
+import base64
 import click
 import boto3
 import botocore
@@ -19,16 +20,23 @@ try:
 except:
     from urllib.parse import quote_plus
 
+use_docker = True
+
 assume_default_aws_region = "us-east-1"
+amazon_linux_ecr_registry_id = "137112412989"
+amazon_linux_docker_image_name = "amazonlinux"
+amazon_linux_docker_image_tag = "latest"
 exclude_files = [".DS_Store"]
 
 deploy_dir = os.path.join(os.getcwd(), "boa-nimbus")
 build_dir = os.path.join(os.getcwd(), "build", "boa-nimbus")
+pip_cache_dir = os.path.join(build_dir, "pip-cache")
 self_dir = os.path.dirname(os.path.realpath(__file__))
 mimes_lookup_string = open(os.path.join(self_dir, "mime.types.txt")).read()
 mimes_lookup_cache = {}
 
 built_zip_hash_map = {}
+local_lambda_packager_image_name = "boa-nimbus-packager"
 
 def verify_deploy_dir_exists():
     if not os.path.exists(deploy_dir):
@@ -60,7 +68,102 @@ def verify_aws_credentials_and_configuration():
         click.echo('No AWS region specified. Assuming {}.'.format(assume_default_aws_region))
         os.environ['AWS_DEFAULT_REGION'] = assume_default_aws_region
     
+def verify_docker_reachable():
     
+    try:
+        p = subprocess.Popen(
+            ["docker", "ps"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE
+        )
+    except:
+        raise click.ClickException("Unable to verify docker is installed and reachable. Is it?")
+    
+    exit_code = p.wait()
+    
+    p_stdout, p_stderr = p.communicate()
+    
+    if exit_code != 0:
+        click.echo(p_stderr)
+        raise click.ClickException("Unable to verify docker is installed and reachable. Is it?")
+
+def pull_latest_amazon_linux_docker_image():
+    
+    click.echo("Fetching credentials for Amazon ECR.")
+    
+    response = boto3.client("ecr").get_authorization_token(
+        registryIds = [amazon_linux_ecr_registry_id]
+    )
+    
+    auth_token = response["authorizationData"][0]["authorizationToken"]
+    proxy_endpoint = response["authorizationData"][0]["proxyEndpoint"]
+    
+    username, password = base64.b64decode(auth_token).decode().split(":")
+    
+    proxy_endpoint_server_protocol = "/".join(proxy_endpoint.split("/")[:3])
+    proxy_endpoint_server = proxy_endpoint.split("/")[2]
+    
+    click.echo("Setting credentials in Docker.")
+    
+    docker_login_args = ["docker", "login", "-u", username, "-p", password, "-e", "none", proxy_endpoint_server_protocol]
+    
+    p = subprocess.Popen(
+        docker_login_args
+    )
+    
+    if p.wait() != 0:
+        raise click.ClickException("Docker did not accept the auth token.")
+    
+    click.echo("Pulling latest Amazon Linux image.")
+    
+    docker_image_full_name = "{}/{}:{}".format(
+        proxy_endpoint_server,
+        amazon_linux_docker_image_name,
+        amazon_linux_docker_image_tag
+    )
+    
+    p = subprocess.Popen(
+        ["docker", "pull", docker_image_full_name]
+    )
+    
+    if p.wait() != 0:
+        raise click.ClickException("Docker was not able to pull the image.")
+    
+    click.echo("Building boa-nimbus packager from Amazon Linux image.")
+    
+    p = subprocess.Popen(
+        ["docker", "build", "-t", local_lambda_packager_image_name, "-"],
+        stdin = subprocess.PIPE
+    )
+    
+    dockerfile_text = """
+    FROM {}
+    
+    RUN curl -s https://bootstrap.pypa.io/get-pip.py -o get-pip.py && python get-pip.py && rm -f get-pip.py
+    RUN pip install virtualenv
+    #RUN yum -y update && yum -y upgrade ; yum clean all
+    RUN yum -y groupinstall "Development Tools" ; yum clean all
+    RUN yum install -y python27-devel gcc ; yum clean all
+    """.format(
+        docker_image_full_name
+    )
+    
+    yum_requirements_path = os.path.join(deploy_dir, "lambda", "yum-dependencies.txt")
+    
+    if os.path.exists(yum_requirements_path):
+        yum_requirements_list = open(yum_requirements_path).read().split("\n")
+        yum_requirements_list = list(x.strip() for x in yum_requirements_list)
+        
+        dockerfile_text += """
+        RUN yum install -y {} ; yum clean all
+        """.format(" ".join(yum_requirements_list))
+    
+    p.communicate(
+        input = dockerfile_text
+    )
+    
+    if p.wait() != 0:
+        raise click.ClickException("Unable to build {} Docker image from Amazon Linux image.".format(local_lambda_packager_image_name))
 
 # http://stackoverflow.com/questions/600268/mkdir-p-functionality-in-python/600612#600612
 def mkdir_p(path):
@@ -253,28 +356,77 @@ def build_and_upload_lambda_packages(s3_bucket_name):
         shutil.copytree(each_function_source_dir, function_build_dir)
         
         pip_requirements_path = os.path.join(function_build_dir, "requirements.txt")
+        
+        package_config_path = os.path.join(function_build_dir, "package.yml")
+        package_config_settings = {}
+        
+        if os.path.exists(package_config_path):
+            package_config_settings = yaml.load(open(package_config_path).read())
     
         if os.path.exists(pip_requirements_path):
             
             click.echo("Installing dependencies.")
-            try:
+            
+            if use_docker:
+                
+                if not os.path.exists(pip_cache_dir):
+                    mkdir_p(pip_cache_dir)
+                
+                docker_build_args = ["docker", "run"]
+                
+                docker_build_args.extend(["-v", "{}:/requirements.txt".format(pip_requirements_path)])
+                docker_build_args.extend(["-v", "{}:/build".format(function_build_dir)])
+                docker_build_args.extend(["-v", "{}:/boa-nimbus".format(deploy_dir)])
+                docker_build_args.extend(["-v", "{}:/root/.cache".format(pip_cache_dir)])
+                
+                docker_build_args.extend(["-it", local_lambda_packager_image_name, "/bin/bash", "-c"])
+                
+                run_commands = [
+                    "virtualenv /venv",
+                    "source /venv/bin/activate",
+                    "pip install -r /requirements.txt"
+                ]
+                
+                for each_dir in ["lib", "lib64"]:
+                    run_commands.append("cp -R /venv/{}/python2.7/site-packages/* /build".format(each_dir))
+                
+                post_install_commands = package_config_settings.get("PostInstallCommands", [])
+                
+                run_commands.extend(post_install_commands)
+                
+                docker_build_args.append(" && ".join(run_commands))
+                
                 p = subprocess.Popen(
-                    ["pip", "install", "-r", pip_requirements_path, "-t", function_build_dir],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
+                    docker_build_args,
+                    #stdout=subprocess.PIPE,
+                    #stderr=subprocess.PIPE
                 )
-            except OSError as e:
-                if e.errno == 2:
-                    raise click.ClickException("Pip not found. Is it installed?")
-                else:
-                    raise
+                
+                exit_code = p.wait()
+                #p_stdout, p_stderr = p.communicate()
+                
+                if exit_code != 0:
+                    #click.echo(p_stderr, err=True)
+                    raise click.ClickException("Docker-based installation of dependencies failed.")
+            else:
+                try:
+                    p = subprocess.Popen(
+                        ["pip", "install", "-r", pip_requirements_path, "-t", function_build_dir],
+                        stdout = subprocess.PIPE,
+                        stderr = subprocess.PIPE
+                    )
+                except OSError as e:
+                    if e.errno == 2:
+                        raise click.ClickException("Pip not found. Is it installed?")
+                    else:
+                        raise
         
-            exit_code = p.wait()
-            p_stdout, p_stderr = p.communicate()
+                exit_code = p.wait()
+                p_stdout, p_stderr = p.communicate()
         
-            if exit_code != 0:
-                click.echo(p_stderr, err=True)
-                raise click.ClickException("Pip returned an error when trying to install dependencies.")
+                if exit_code != 0:
+                    click.echo(p_stderr, err=True)
+                    raise click.ClickException("Pip returned an error when trying to install dependencies.")
     
         build_zip_path = os.path.join(build_dir, "lambda", each_function_name)
         if os.path.exists("{}.zip".format(build_zip_path)):
@@ -395,6 +547,7 @@ def clean_build_artifacts(ctx, param, value):
     
     if os.path.exists(build_dir):
         shutil.rmtree(build_dir)
+    
 
 @click.version_option(version=open(os.path.join(self_dir, 'version.txt')).read())
 
@@ -428,6 +581,11 @@ def deploy(ctx, stack_name, project_stack_name, stack_name_parameter_key):
         raise click.ClickException('Missing option \"--stack-name\"')
     
     verify_aws_credentials_and_configuration()
+    
+    if use_docker:
+        verify_docker_reachable()
+    
+        pull_latest_amazon_linux_docker_image()
     
     cloudformation_client = boto3.client('cloudformation')
     
