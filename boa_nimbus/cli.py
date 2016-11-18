@@ -144,6 +144,7 @@ def pull_latest_amazon_linux_docker_image():
     #RUN yum -y update && yum -y upgrade ; yum clean all
     RUN yum -y groupinstall "Development Tools" ; yum clean all
     RUN yum install -y python27-devel gcc ; yum clean all
+    RUN virtualenv /venv
     """.format(
         docker_image_full_name
     )
@@ -382,7 +383,6 @@ def build_and_upload_lambda_packages(s3_bucket_name):
                 docker_build_args.extend(["-it", local_lambda_packager_image_name, "/bin/bash", "-c"])
                 
                 run_commands = [
-                    "virtualenv /venv",
                     "source /venv/bin/activate",
                     "pip install -r /requirements.txt"
                 ]
