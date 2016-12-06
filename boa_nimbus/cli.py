@@ -530,7 +530,8 @@ def upload_s3_object_if_unchanged(s3_bucket_name, s3_key, file_path):
         
         try:
             object_mime_type = lookup_mime_type_for_extension(file_path.split(".")[-1])
-            extra_args_dict["ContentType"] = object_mime_type
+            if object_mime_type is not None:
+                extra_args_dict["ContentType"] = object_mime_type
         except:
             pass
         
