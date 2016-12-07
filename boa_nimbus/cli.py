@@ -211,7 +211,7 @@ def directory_sha1_hash(directory):
     
     return SHAhash.hexdigest()
 
-def deploy_or_update_stack(stack_name):
+def deploy_or_update_stack(stack_name, bucket_name = None):
     
     cloudformation_client = boto3.client("cloudformation")
     
@@ -233,9 +233,23 @@ def deploy_or_update_stack(stack_name):
         stack_id = this_stack["StackId"]
         last_status = this_stack["StackStatus"]
         
+        current_parameter_list = this_stack.get("Parameters", [])
+        
+        print(response)
+        
     except botocore.exceptions.ClientError as e:
         if "does not exist" not in e.response['Error']['Message']:
             raise
+    
+    parameters_list = []
+    
+    if bucket_name is not None:
+        parameters_list.append({
+            "ParameterKey": "BucketName",
+            "ParameterValue": bucket_name
+        })
+    else:
+        parameters_list = current_parameter_list
     
     if not stack_already_exists:
         click.echo("Deploying stack.")
@@ -243,7 +257,8 @@ def deploy_or_update_stack(stack_name):
         response = cloudformation_client.create_stack(
             StackName = stack_name,
             TemplateBody = template_body,
-            Capabilities = [ "CAPABILITY_IAM" ]
+            Capabilities = [ "CAPABILITY_IAM" ],
+            Parameters = parameters_list
         )
         stack_id = response["StackId"]
         last_status = "CREATE_IN_PROGRESS"
@@ -254,7 +269,8 @@ def deploy_or_update_stack(stack_name):
             response = cloudformation_client.update_stack(
                 StackName = stack_name,
                 TemplateBody = template_body,
-                Capabilities = [ "CAPABILITY_IAM" ]
+                Capabilities = [ "CAPABILITY_IAM" ],
+                Parameters = parameters_list
             )
         except botocore.exceptions.ClientError as e:
             if not (e.response["Error"]["Code"] == "ValidationError" and "No updates are to be performed." in e.response["Error"]["Message"]):
@@ -573,10 +589,11 @@ def cli(ctx, verbose, region, profile):
 @click.command()
 @click.option('--stack-name', help='Name of CloudFormation stack.')
 @click.option('--project-stack-name', help='For updates: Name of main project\'s CloudFormation stack.')
+@click.option('--bucket-name', help='The name of the bucket for the source stack.', default=None)
 @click.option('--stack-name-parameter-key', default='LambdaPackageStackName', help='For updates: Name of parameter in the main project\'s template that specifies the stack deployed by this CLI.')
 @click.option('--clean', is_flag=True, callback=clean_build_artifacts, expose_value=False, is_eager=True)
 @click.pass_context
-def deploy(ctx, stack_name, project_stack_name, stack_name_parameter_key):
+def deploy(ctx, stack_name, project_stack_name, bucket_name, stack_name_parameter_key):
     
     if stack_name is None and project_stack_name is None:
         raise click.ClickException('Missing option \"--stack-name\"')
@@ -617,7 +634,7 @@ def deploy(ctx, stack_name, project_stack_name, stack_name_parameter_key):
     if not os.path.exists(build_dir):
         mkdir_p(build_dir)
     
-    s3_bucket_name = deploy_or_update_stack(stack_name)
+    s3_bucket_name = deploy_or_update_stack(stack_name, bucket_name)
     
     build_and_upload_lambda_packages(s3_bucket_name)
     

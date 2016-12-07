@@ -1,6 +1,20 @@
 ---
 AWSTemplateFormatVersion: '2010-09-09'
 Description: An S3 bucket for hosting objects for another stack.
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: Name for S3 bucket. Leave blank for default.
+    Default: ''
+
+Conditions:
+  UseCustomBucketName:
+    Fn::Not:
+      - Fn::Equals:
+        - Ref: BucketName
+        - ''
+
 Resources:
   
   #
@@ -13,6 +27,11 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       AccessControl: Private
+      BucketName:
+        Fn::If:
+          - UseCustomBucketName
+          - Ref: BucketName
+          - Ref: AWS::NoValue
   
   #
   #   Stack Cleanup
@@ -30,7 +49,7 @@ Resources:
     Properties:
       Description: Clears out the stack's S3 bucket
       Handler: index.lambda_handler
-      MemorySize: 1024
+      MemorySize: 1536
       Role:
         Fn::GetAtt:
         - StackCleanupFunctionRole
@@ -109,7 +128,7 @@ Resources:
               return handler_object.handle_event(event, context)
               
       Runtime: python2.7
-      Timeout: '300'
+      Timeout: 300
   
   StackCleanupFunctionRole:
     Type: AWS::IAM::Role
