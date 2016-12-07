@@ -235,8 +235,6 @@ def deploy_or_update_stack(stack_name, bucket_name = None):
         
         current_parameter_list = this_stack.get("Parameters", [])
         
-        print(response)
-        
     except botocore.exceptions.ClientError as e:
         if "does not exist" not in e.response['Error']['Message']:
             raise
@@ -590,7 +588,7 @@ def cli(ctx, verbose, region, profile):
 @click.option('--stack-name', help='Name of CloudFormation stack.')
 @click.option('--project-stack-name', help='For updates: Name of main project\'s CloudFormation stack.')
 @click.option('--bucket-name', help='The name of the bucket for the source stack.', default=None)
-@click.option('--stack-name-parameter-key', default='LambdaPackageStackName', help='For updates: Name of parameter in the main project\'s template that specifies the stack deployed by this CLI.')
+@click.option('--stack-name-parameter-key', default='S3SourceName', help='For updates: Name of parameter in the main project\'s template that specifies the stack deployed by this CLI.')
 @click.option('--clean', is_flag=True, callback=clean_build_artifacts, expose_value=False, is_eager=True)
 @click.pass_context
 def deploy(ctx, stack_name, project_stack_name, bucket_name, stack_name_parameter_key):
@@ -680,9 +678,11 @@ def deploy(ctx, stack_name, project_stack_name, bucket_name, stack_name_paramete
                 # This is an inline Lambda function unrelated to this CLI's resources.
                 continue
             
+            '''
             if stack_name_parameter_key not in json.dumps(each_code_resource['S3Bucket']):
                 # This probably points to another unrelated bucket.
                 continue
+            '''
             
             source_s3_key = each_code_resource['S3Key']
             each_lambda_function_name = lambda_function_logical_physical_map[each_lambda_logical_id]
