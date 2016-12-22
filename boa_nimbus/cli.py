@@ -309,7 +309,7 @@ def deploy_or_update_stack(stack_name, bucket_name = None):
     
     return s3_bucket_name
 
-def build_and_upload_lambda_packages(s3_bucket_name):
+def build_lambda_packages(s3_bucket_name = None):
     
     lambda_src_dir = os.path.join(deploy_dir, "lambda")
     
@@ -471,9 +471,9 @@ def build_and_upload_lambda_packages(s3_bucket_name):
         
         built_zip_hash_map[s3_object_key] = new_zip_hash
         
-    
-    for each_lambda_zip_tuple in lambda_zips_to_upload:
-        upload_s3_object_if_unchanged(*each_lambda_zip_tuple)
+    if s3_bucket_name is not None:
+        for each_lambda_zip_tuple in lambda_zips_to_upload:
+            upload_s3_object_if_unchanged(*each_lambda_zip_tuple)
 
 def upload_plain_s3_objects(s3_bucket_name):
     
@@ -585,6 +585,16 @@ def cli(ctx, verbose, region, profile):
     }
 
 @click.command()
+@click.option('--clean', is_flag=True, callback=clean_build_artifacts, expose_value=False, is_eager=True)
+@click.pass_context
+def build(ctx):
+    
+    build_lambda_packages()
+    
+
+cli.add_command(build)
+
+@click.command()
 @click.option('--stack-name', help='Name of CloudFormation stack.')
 @click.option('--project-stack-name', help='For updates: Name of main project\'s CloudFormation stack.')
 @click.option('--bucket-name', help='The name of the bucket for the source stack.', default=None)
@@ -634,7 +644,7 @@ def deploy(ctx, stack_name, project_stack_name, bucket_name, stack_name_paramete
     
     s3_bucket_name = deploy_or_update_stack(stack_name, bucket_name)
     
-    build_and_upload_lambda_packages(s3_bucket_name)
+    build_lambda_packages(s3_bucket_name)
     
     upload_plain_s3_objects(s3_bucket_name)
     
