@@ -20,8 +20,6 @@ try:
 except:
     from urllib.parse import quote_plus
 
-use_docker = True
-
 assume_default_aws_region = "us-east-1"
 amazon_linux_ecr_registry_id = "137112412989"
 amazon_linux_docker_image_name = "amazonlinux"
@@ -309,7 +307,7 @@ def deploy_or_update_stack(stack_name, bucket_name = None):
     
     return s3_bucket_name
 
-def build_lambda_packages(s3_bucket_name = None):
+def build_lambda_packages(s3_bucket_name = None, use_docker = True):
     
     lambda_src_dir = os.path.join(deploy_dir, "lambda")
     
@@ -586,10 +584,19 @@ def cli(ctx, verbose, region, profile):
 
 @click.command()
 @click.option('--clean', is_flag=True, callback=clean_build_artifacts, expose_value=False, is_eager=True)
+@click.option('--use-docker/--no-use-docker', default=True)
 @click.pass_context
-def build(ctx):
+def build(ctx, use_docker):
     
-    build_lambda_packages()
+    if use_docker:
+        verify_docker_reachable()
+    
+        pull_latest_amazon_linux_docker_image()
+    
+    build_lambda_packages(
+        s3_bucket_name = None,
+        use_docker = use_docker
+    )
     
 
 cli.add_command(build)
@@ -600,8 +607,9 @@ cli.add_command(build)
 @click.option('--bucket-name', help='The name of the bucket for the source stack.', default=None)
 @click.option('--stack-name-parameter-key', default='S3SourceName', help='For updates: Name of parameter in the main project\'s template that specifies the stack deployed by this CLI.')
 @click.option('--clean', is_flag=True, callback=clean_build_artifacts, expose_value=False, is_eager=True)
+@click.option('--use-docker/--no-use-docker', default=True)
 @click.pass_context
-def deploy(ctx, stack_name, project_stack_name, bucket_name, stack_name_parameter_key):
+def deploy(ctx, stack_name, project_stack_name, bucket_name, stack_name_parameter_key, use_docker):
     
     if stack_name is None and project_stack_name is None:
         raise click.ClickException('Missing option \"--stack-name\"')
@@ -644,7 +652,10 @@ def deploy(ctx, stack_name, project_stack_name, bucket_name, stack_name_paramete
     
     s3_bucket_name = deploy_or_update_stack(stack_name, bucket_name)
     
-    build_lambda_packages(s3_bucket_name)
+    build_lambda_packages(
+        s3_bucket_name = s3_bucket_name,
+        use_docker = use_docker
+    )
     
     upload_plain_s3_objects(s3_bucket_name)
     
