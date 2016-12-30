@@ -611,7 +611,9 @@ cli.add_command(build)
 @click.pass_context
 def deploy(ctx, stack_name, project_stack_name, bucket_name, stack_name_parameter_key, use_docker):
     
-    if stack_name is None and project_stack_name is None:
+    user_specified_bucket_name = bucket_name
+    
+    if stack_name is None and project_stack_name is None and user_specified_bucket_name is None:
         raise click.ClickException('Missing option \"--stack-name\"')
     
     verify_aws_credentials_and_configuration()
@@ -626,23 +628,27 @@ def deploy(ctx, stack_name, project_stack_name, bucket_name, stack_name_paramete
     project_stack = None
     
     if stack_name is None:
-        # Determine stack_name from project_stack_name.
-        response = cloudformation_client.describe_stacks(
-            StackName = project_stack_name
-        )
         
-        project_stack = response['Stacks'][0]
+        if project_stack_name is not None:
+            response = cloudformation_client.describe_stacks(
+                StackName = project_stack_name
+            )
         
-        for each_parameter_set in project_stack.get('Parameters', []):
-            if each_parameter_set['ParameterKey'] == stack_name_parameter_key:
-                stack_name = each_parameter_set['ParameterValue']
-                break
+            project_stack = response['Stacks'][0]
+            
+            if user_specified_bucket_name is None:
+                # Determine stack_name from project_stack_name.
         
-        if stack_name is None:
-            raise click.ClickException('Unable to find expected parameter ({}) in stack: {}.'.format(
-                stack_name_parameter_key,
-                project_stack_name
-            ))
+                for each_parameter_set in project_stack.get('Parameters', []):
+                    if each_parameter_set['ParameterKey'] == stack_name_parameter_key:
+                        stack_name = each_parameter_set['ParameterValue']
+                        break
+        
+                if stack_name is None:
+                    raise click.ClickException('Unable to find expected parameter ({}) in stack: {}.'.format(
+                        stack_name_parameter_key,
+                        project_stack_name
+                    ))
     
     
     verify_deploy_dir_exists()
@@ -650,7 +656,10 @@ def deploy(ctx, stack_name, project_stack_name, bucket_name, stack_name_paramete
     if not os.path.exists(build_dir):
         mkdir_p(build_dir)
     
-    s3_bucket_name = deploy_or_update_stack(stack_name, bucket_name)
+    if user_specified_bucket_name is not None:
+        s3_bucket_name = user_specified_bucket_name
+    else:
+        s3_bucket_name = deploy_or_update_stack(stack_name, bucket_name)
     
     build_lambda_packages(
         s3_bucket_name = s3_bucket_name,
