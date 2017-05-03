@@ -25,6 +25,7 @@ amazon_linux_ecr_registry_id = "137112412989"
 amazon_linux_docker_image_name = "amazonlinux"
 amazon_linux_docker_image_tag = "latest"
 exclude_files = [".DS_Store"]
+default_lambda_runtime = "python3.6"
 
 deploy_dir = os.path.join(os.getcwd(), "boa-nimbus")
 build_dir = os.path.join(os.getcwd(), "build", "boa-nimbus")
@@ -136,13 +137,16 @@ def pull_latest_amazon_linux_docker_image():
     
     dockerfile_text = """
     FROM {}
-    
+    RUN yum -y groupinstall "Development Tools" ; yum clean all
+    RUN yum install -y python35-devel
+    RUN yum install -y zlib-devel bzip2-devel openssl-devel ncurses-devel sqlite-devel readline-devel tk-devel gdbm-devel db4-devel libpcap-devel xz-devel expat-devel ; yum clean all
+    RUN curl https://www.python.org/ftp/python/3.6.1/Python-3.6.1.tar.xz -o python.tar.xz && tar xf python.tar.xz && cd Python* && ./configure --prefix=/usr/local --enable-shared LDFLAGS="-Wl,-rpath /usr/local/lib" && make && make altinstall
     RUN curl -s https://bootstrap.pypa.io/get-pip.py -o get-pip.py && python get-pip.py && rm -f get-pip.py
     RUN pip install virtualenv
     #RUN yum -y update && yum -y upgrade ; yum clean all
-    RUN yum -y groupinstall "Development Tools" ; yum clean all
     RUN yum install -y python27-devel gcc ; yum clean all
     RUN virtualenv /venv
+    RUN python3.6 -m venv /venv3
     """.format(
         docker_image_full_name
     )
@@ -220,6 +224,8 @@ def deploy_or_update_stack(stack_name, bucket_name = None):
     template_body = open(os.path.join(self_dir, "bucket-stack-template.yaml")).read()
     
     stack_already_exists = False
+    
+    current_parameter_list = []
     
     try:
         response = cloudformation_client.describe_stacks(
@@ -368,17 +374,33 @@ def build_lambda_packages(s3_bucket_name = None, use_docker = True):
     
         shutil.copytree(each_function_source_dir, function_build_dir)
         
+        function_runtime = default_lambda_runtime
+        
         pip_requirements_path = os.path.join(function_build_dir, "requirements.txt")
         
-        package_config_path = os.path.join(function_build_dir, "package.yml")
+        package_config_path = os.path.join(function_build_dir, "package.yaml")
         package_config_settings = {}
         
         if os.path.exists(package_config_path):
             package_config_settings = yaml.load(open(package_config_path).read())
+        
+        function_runtime = package_config_settings.get("Options", {}).get("Runtime", default_lambda_runtime)
+        
+        if function_runtime not in ["python2.7", "python3.6"]:
+            raise click.ClickException("Unsupported Lambda function runtime: {}".format(function_runtime))
     
         if os.path.exists(pip_requirements_path):
             
-            click.echo("Installing dependencies.")
+            click.echo("Installing dependencies ({}).".format(function_runtime))
+            
+            pip_binary = "pip3.6"
+            venv_path = "/venv3"
+            venv_python_dir_path = "python3.6"
+            
+            if function_runtime == "python2.7":
+                pip_binary = "pip2"
+                venv_path = "/venv"
+                venv_python_dir_path = "python2.7"
             
             if use_docker:
                 
@@ -395,12 +417,12 @@ def build_lambda_packages(s3_bucket_name = None, use_docker = True):
                 docker_build_args.extend(["-it", local_lambda_packager_image_name, "/bin/bash", "-c"])
                 
                 run_commands = [
-                    "source /venv/bin/activate",
-                    "pip install -r /requirements.txt"
+                    "source {}/bin/activate".format(venv_path),
+                    "{} install -r /requirements.txt".format(pip_binary)
                 ]
                 
                 for each_dir in ["lib", "lib64"]:
-                    run_commands.append("cp -R /venv/{}/python2.7/site-packages/* /build".format(each_dir))
+                    run_commands.append("cp -R {}/{}/{}/site-packages/* /build".format(venv_path, each_dir, venv_python_dir_path))
                 
                 post_install_commands = package_config_settings.get("PostInstallCommands", [])
                 
@@ -423,7 +445,7 @@ def build_lambda_packages(s3_bucket_name = None, use_docker = True):
             else:
                 try:
                     p = subprocess.Popen(
-                        ["pip", "install", "-r", pip_requirements_path, "-t", function_build_dir],
+                        [pip_binary, "install", "-r", pip_requirements_path, "-t", function_build_dir],
                         stdout = subprocess.PIPE,
                         stderr = subprocess.PIPE
                     )
@@ -450,7 +472,8 @@ def build_lambda_packages(s3_bucket_name = None, use_docker = True):
         
         new_build_metadata = {
             "source": source_dir_hash,
-            "zip": new_zip_hash
+            "zip": new_zip_hash,
+            "runtime": function_runtime
         }
         
         open(each_function_build_metadata_file_path, "w").write(json.dumps(new_build_metadata, indent=4))
