@@ -25,7 +25,7 @@ amazon_linux_ecr_registry_id = "137112412989"
 amazon_linux_docker_image_name = "amazonlinux"
 amazon_linux_docker_image_tag = "latest"
 exclude_files = [".DS_Store"]
-default_lambda_runtime = "python3.6"
+default_lambda_runtime = "python2.7"
 
 deploy_dir = os.path.join(os.getcwd(), "boa-nimbus")
 build_dir = os.path.join(os.getcwd(), "build", "boa-nimbus")
@@ -140,7 +140,7 @@ def pull_latest_amazon_linux_docker_image():
     RUN yum -y groupinstall "Development Tools" ; yum clean all
     RUN yum install -y python35-devel
     RUN yum install -y zlib-devel bzip2-devel openssl-devel ncurses-devel sqlite-devel readline-devel tk-devel gdbm-devel db4-devel libpcap-devel xz-devel expat-devel ; yum clean all
-    RUN curl https://www.python.org/ftp/python/3.6.1/Python-3.6.1.tar.xz -o python.tar.xz && tar xf python.tar.xz && cd Python* && ./configure --prefix=/usr/local --enable-shared LDFLAGS="-Wl,-rpath /usr/local/lib" && make && make altinstall
+    RUN curl https://www.python.org/ftp/python/3.6.1/Python-3.6.1.tar.xz -o python.tar.xz && tar xf python.tar.xz && cd Python* && ./configure --prefix=/usr/local --enable-shared LDFLAGS="-Wl,-rpath /usr/local/lib" && make && make altinstall && cd .. && rm -rf Python*
     RUN curl -s https://bootstrap.pypa.io/get-pip.py -o get-pip.py && python get-pip.py && rm -f get-pip.py
     RUN pip install virtualenv
     #RUN yum -y update && yum -y upgrade ; yum clean all
