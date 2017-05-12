@@ -5,15 +5,14 @@ import sys
 from setuptools import setup, find_packages
 
 requires = [
-    "click==6.6",
+    "click==6.7",
     "PyYAML==3.12",
-    "boto3==1.4.1",
-    "botocore==1.4.67",
-    "docutils==0.12",
-    "futures==3.0.5",
-    "jmespath==0.9.0",
-    "python-dateutil==2.5.3",
-    "s3transfer==0.1.9",
+    "boto3==1.4.4",
+    "botocore==1.5.48",
+    "docutils==0.13.1",
+    "jmespath==0.9.2",
+    "python-dateutil==2.6.0",
+    "s3transfer==0.1.10",
     "six==1.10.0"
 ]
 
@@ -37,7 +36,8 @@ setup_options = dict(
         'Intended Audience :: System Administrators',
         'Natural Language :: English',
         'Programming Language :: Python',
-        'Programming Language :: Python :: 2.7',
+        'Programming Language :: Python :: 3.5',
+        'Programming Language :: Python :: 3.6',
     ),
 )
 
