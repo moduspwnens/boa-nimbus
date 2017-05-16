@@ -18,6 +18,11 @@ from preprocess_swagger_input import PreprocessSwaggerInputBuildStepAction
 from build_local_python_pip_modules import BuildLocalPythonPipModulesBuildStepAction
 from build_python_lambda_functions import BuildPythonLambdaFunctionsBuildStepAction
 
+from create_bucket_if_not_exists import CreateBucketIfNotExistsDeployStepAction
+from upload_directory_contents_to_bucket import UploadDirectoryContentsToBucketDeployStepAction
+from create_or_update_cloudformation_stack import CreateOrUpdateCloudFormationStackDeployStepAction
+from update_lambda_function_sources import UpdateLambdaFunctionSourcesDeployStepAction
+
 boafile_name = "boafile.yaml"
 
 @click.version_option(
@@ -48,13 +53,22 @@ def cli(ctx, verbose, region, profile, use_docker):
     }
     
     if ctx.invoked_subcommand is None:
-        build()
+        build_and_deploy()
+
+@click.command()
+@click.option('--use-docker/--no-use-docker', default=True)
+@click.pass_context
+def build_and_deploy(ctx, use_docker):
+    
+    build()
+    deploy()
+    
+cli.add_command(build_and_deploy)
 
 @click.command()
 @click.option('--use-docker/--no-use-docker', default=True)
 @click.pass_context
 def build(ctx, use_docker):
-    
     if not os.path.exists(boafile_name):
         raise click.ClickException("No {} file found in current directory.".format(boafile_name))
     
@@ -79,11 +93,8 @@ def build(ctx, use_docker):
     
     for each_group_dict in build_step_groups:
         run_build_step_group(boafile_config, each_group_dict, use_docker)
-    
-    #click.echo("Boafile config: {}".format(json.dumps(boafile_config)))
-    
-cli.add_command(build)
 
+cli.add_command(build)
 
 def run_build_step_group(full_config, group_config, use_docker):
     
@@ -129,4 +140,52 @@ def run_build_step(full_config, step_config, use_docker):
     if action_handler_class is not None:
         new_action_handler = action_handler_class(full_config, step_config)
         new_action_handler.use_docker = use_docker
+        new_action_handler.run()
+
+@click.command()
+@click.option('--use-docker/--no-use-docker', default=True)
+@click.pass_context
+def deploy(ctx, use_docker):
+    if not os.path.exists(boafile_name):
+        raise click.ClickException("No {} file found in current directory.".format(boafile_name))
+    
+    boafile_config = yaml.load(open(boafile_name).read())
+    
+    deploy_step_groups = boafile_config.get("DeployStepGroups", [])
+    
+    if len(deploy_step_groups) == 0:
+        raise click.ClickException("No \"DeployStepGroups\" specified in {}.".format(boafile_name))
+    
+    for each_group_dict in deploy_step_groups:
+        run_deploy_step_group(boafile_config, each_group_dict)
+
+cli.add_command(deploy)
+
+def run_deploy_step_group(full_config, group_config):
+    each_group_name = group_config.get("Name", "<Untitled group>")
+    
+    click.echo("Starting group: {}".format(each_group_name))
+    
+    step_list = group_config.get("Steps", [])
+    for each_step in step_list:
+        run_deploy_step(full_config, each_step)
+
+def run_deploy_step(full_config, step_config):
+    step_action = step_config.get("Action", "")
+    
+    action_handler_class = None
+    
+    if step_action == "CreateBucketIfNotExists":
+        action_handler_class = CreateBucketIfNotExistsDeployStepAction
+    elif step_action == "UploadDirectoryContentsToBucket":
+        action_handler_class = UploadDirectoryContentsToBucketDeployStepAction
+    elif step_action == "CreateOrUpdateCloudFormationStack":
+        action_handler_class = CreateOrUpdateCloudFormationStackDeployStepAction
+    elif step_action == "UpdateLambdaFunctionSources":
+        action_handler_class = UpdateLambdaFunctionSourcesDeployStepAction
+    else:
+        click.echo("Unknown command action: {}".format(step_action), err=True)
+    
+    if action_handler_class is not None:
+        new_action_handler = action_handler_class(full_config, step_config)
         new_action_handler.run()
