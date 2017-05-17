@@ -3,6 +3,7 @@ import threading
 import click
 import boto3
 from botocore.exceptions import ClientError
+import mime
 import hashing_helpers
 
 class UploadDirectoryContentsToBucketDeployStepAction(object):
@@ -120,10 +121,17 @@ class UploadDirectoryContentsToBucketDeployStepAction(object):
         
         s3_object_content = open(each_file_path, "rb").read()
         
+        mime_type = "binary/octet-stream"
+        
+        mime_type_list = mime.Types.of(each_file_path)
+        if len(mime_type_list):
+            mime_type = str(mime_type_list[0])
+        
         s3_client.put_object(
             Bucket = bucket_name,
             Key = each_s3_key,
             Body = s3_object_content,
+            ContentType = mime_type,
             Metadata = {
                 "boa-nimbus-md5": each_file_md5,
                 "boa-nimbus-sha256-base64": each_file_sha256_base64

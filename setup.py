@@ -11,6 +11,7 @@ requires = [
     "botocore==1.5.48",
     "docutils==0.13.1",
     "jmespath==0.9.2",
+    "mime==0.1.0",
     "python-dateutil==2.6.0",
     "s3transfer==0.1.10",
     "six==1.10.0"
