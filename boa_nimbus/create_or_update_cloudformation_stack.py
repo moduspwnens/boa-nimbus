@@ -1,4 +1,5 @@
 import os
+import time
 import click
 import boto3
 from botocore.exceptions import ClientError
@@ -54,7 +55,7 @@ class CreateOrUpdateCloudFormationStackDeployStepAction(object):
             else:
                 raise
         
-        
+        should_wait_for_stack_ready = False
         
         if not stack_exists:
             # Upload the template file to S3.
@@ -79,6 +80,8 @@ class CreateOrUpdateCloudFormationStackDeployStepAction(object):
                     "CAPABILITY_IAM"
                 ]
             )
+            
+            should_wait_for_stack_ready = True
         
         else:
             
@@ -112,9 +115,27 @@ class CreateOrUpdateCloudFormationStackDeployStepAction(object):
                         "CAPABILITY_IAM"
                     ]
                 )
+                should_wait_for_stack_ready = True
             except ClientError as e:
                 if e.response['Error']['Code'] == 'ValidationError' and "No updates are to be performed." in str(e):
                     click.echo("No updates necessary for CloudFormation stack.")
                 else:
                     raise
         
+        if should_wait_for_stack_ready:
+            
+            while True:
+                
+                response = cf_client.describe_stacks(
+                    StackName = self.stack_name
+                )
+                
+                this_stack = response["Stacks"][0]
+                this_stack_status = this_stack["StackStatus"]
+                
+                click.echo(" > Stack status: {}".format(this_stack_status))
+                
+                if not this_stack_status.endswith("_IN_PROGRESS"):
+                    break
+                
+                time.sleep(15)

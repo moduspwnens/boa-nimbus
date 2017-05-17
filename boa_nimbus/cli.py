@@ -55,13 +55,13 @@ def cli(ctx, verbose, region, profile, use_docker):
     if ctx.invoked_subcommand is None:
         build_and_deploy()
 
-@click.command()
+@click.command(name="build-and-deploy")
 @click.option('--use-docker/--no-use-docker', default=True)
 @click.pass_context
 def build_and_deploy(ctx, use_docker):
     
-    build()
-    deploy()
+    ctx.forward(build)
+    ctx.forward(deploy)
     
 cli.add_command(build_and_deploy)
 
@@ -146,6 +146,7 @@ def run_build_step(full_config, step_config, use_docker):
 @click.option('--use-docker/--no-use-docker', default=True)
 @click.pass_context
 def deploy(ctx, use_docker):
+    
     if not os.path.exists(boafile_name):
         raise click.ClickException("No {} file found in current directory.".format(boafile_name))
     
