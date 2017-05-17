@@ -8,16 +8,42 @@ import hashing_helpers
 class UploadDirectoryContentsToBucketDeployStepAction(object):
     
     def __init__(self, full_config, step_config):
-        self.bucket_name_prefix = step_config.get("BucketNamePrefix", "")
+        self.bucket_name_prefix = step_config.get("BucketNamePrefix")
+        self.stack_bucket_logical_resource_id = step_config.get("StackBucketLogicalResourceId")
+        self.stack_name = step_config.get("StackName")
         self.directory = step_config["Directory"]
         self.except_files = step_config.get("ExceptFiles", [])
         self.upload_only_if_not_exists_files = step_config.get("UploadOnlyIfNotExists", [])
+        
+        self.global_exclude_files = [
+            ".DS_Store"
+        ]
+    
+    def __get_bucket_name(self):
+        if self.bucket_name_prefix is not None:
+            
+            response = boto3.client("sts").get_caller_identity()
+            return self.bucket_name_prefix + response["Account"]
+            
+        elif self.stack_bucket_logical_resource_id is not None and self.stack_name is not None:
+            
+            response_iter = boto3.client("cloudformation").get_paginator("list_stack_resources").paginate(
+                StackName = self.stack_name
+            )
+            
+            for each_response in response_iter:
+                for each_resource in each_response.get("StackResourceSummaries", []):
+                    if each_resource["LogicalResourceId"] == self.stack_bucket_logical_resource_id:
+                        return each_resource["PhysicalResourceId"]
+            
+        
+        raise click.ClickException("Unable to determine bucket name to upload directory contents into.")
     
     def run(self):
         
-        response = boto3.client("sts").get_caller_identity()
         
-        bucket_name = self.bucket_name_prefix + response["Account"]
+        
+        bucket_name = self.__get_bucket_name()
         
         thread_list = []
         
@@ -30,6 +56,9 @@ class UploadDirectoryContentsToBucketDeployStepAction(object):
                 each_s3_key = each_s3_key[len(self.directory)+1:]
                 
                 if each_s3_key in self.except_files:
+                    continue
+                
+                if each_file in self.global_exclude_files:
                     continue
                 
                 each_file_path = os.path.join(dir_name, each_file)
