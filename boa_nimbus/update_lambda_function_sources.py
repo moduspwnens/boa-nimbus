@@ -111,7 +111,7 @@ class UpdateLambdaFunctionSourcesDeployStepAction(object):
             ))
             return
         
-        click.echo("Updating code of {}.".format(each_resource_key))
+        click.echo("Updating code of {}.".format(logical_resource_id))
         
         lambda_client.update_function_code(
             FunctionName = physical_resource_id,
