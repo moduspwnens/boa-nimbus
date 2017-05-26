@@ -14,6 +14,7 @@ class CreateOrUpdateCloudFormationStackDeployStepAction(object):
         self.bucket_name_prefix = step_config.get("SourceBucketNamePrefix", "")
         self.stack_name = step_config["StackName"]
         self.template_path = step_config["TemplatePath"]
+        self.stack_parameter_updates = step_config.get("StackParameterUpdates", {})
     
     def run(self):
         
@@ -57,6 +58,23 @@ class CreateOrUpdateCloudFormationStackDeployStepAction(object):
         
         should_wait_for_stack_ready = False
         
+        required_params_map = {}
+        required_params_map["S3SourceBucket"] = bucket_name
+        
+        for each_key, each_value in self.stack_parameter_updates.items():
+            if each_key == "ApiDefinitionVersion":
+                # The value should be a hash of the given file.
+                param_value = hashing_helpers.file_md5_checksum(each_value)
+                required_params_map[each_key] = param_value
+        
+        required_parameter_list = []
+        
+        for each_key, each_value in required_params_map.items():
+            required_parameter_list.append({
+                "ParameterKey": each_key,
+                "ParameterValue": each_value
+            })
+        
         if not stack_exists:
             # Upload the template file to S3.
             
@@ -70,12 +88,7 @@ class CreateOrUpdateCloudFormationStackDeployStepAction(object):
                     bucket_name,
                     cf_template_key
                 ),
-                Parameters = [
-                    {
-                        "ParameterKey": "S3SourceBucket",
-                        "ParameterValue": bucket_name
-                    }
-                ],
+                Parameters = required_parameter_list,
                 Capabilities = [
                     "CAPABILITY_IAM"
                 ]
@@ -89,13 +102,11 @@ class CreateOrUpdateCloudFormationStackDeployStepAction(object):
                 self.stack_name
             ))
             
-            new_parameter_list = [{
-                "ParameterKey": "S3SourceBucket",
-                "ParameterValue": bucket_name
-            }]
+            new_parameter_list = []
+            new_parameter_list.extend(required_parameter_list)
             
             for each_parameter_dict in response["Stacks"][0]["Parameters"]:
-                if each_parameter_dict["ParameterKey"] == "S3SourceBucket":
+                if each_parameter_dict["ParameterKey"] in required_params_map:
                     continue
                 else:
                     new_parameter_list.append({
@@ -124,6 +135,8 @@ class CreateOrUpdateCloudFormationStackDeployStepAction(object):
         
         if should_wait_for_stack_ready:
             
+            stack_ending_status = None
+            
             while True:
                 
                 response = cf_client.describe_stacks(
@@ -136,6 +149,10 @@ class CreateOrUpdateCloudFormationStackDeployStepAction(object):
                 click.echo(" > Stack status: {}".format(this_stack_status))
                 
                 if not this_stack_status.endswith("_IN_PROGRESS"):
+                    stack_ending_status = this_stack_status
                     break
                 
                 time.sleep(15)
+            
+            if "ROLLBACK" in stack_ending_status:
+                raise click.ClickException("Stack update ended with status: {}".format(stack_ending_status))
