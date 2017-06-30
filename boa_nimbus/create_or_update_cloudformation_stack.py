@@ -15,6 +15,7 @@ class CreateOrUpdateCloudFormationStackDeployStepAction(object):
         self.stack_name = step_config["StackName"]
         self.template_path = step_config["TemplatePath"]
         self.stack_parameter_updates = step_config.get("StackParameterUpdates", {})
+        self.stack_parameter_defaults = step_config.get("StackParameterDefaults", {})
     
     def run(self):
         
@@ -59,6 +60,10 @@ class CreateOrUpdateCloudFormationStackDeployStepAction(object):
         should_wait_for_stack_ready = False
         
         required_params_map = {}
+        
+        for each_key, each_value in self.stack_parameter_defaults.items():
+            required_params_map[each_key] = each_value
+        
         required_params_map["S3SourceBucket"] = bucket_name
         
         for each_key, each_value in self.stack_parameter_updates.items():
