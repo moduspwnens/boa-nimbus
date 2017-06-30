@@ -60,11 +60,12 @@ class CreateOrUpdateCloudFormationStackDeployStepAction(object):
         should_wait_for_stack_ready = False
         
         required_params_map = {}
-        
-        for each_key, each_value in self.stack_parameter_defaults.items():
-            required_params_map[each_key] = each_value
-        
         required_params_map["S3SourceBucket"] = bucket_name
+        
+        if not stack_exists:
+            # Include default parameter values.
+            for each_key, each_value in self.stack_parameter_defaults.items():
+                required_params_map[each_key] = each_value
         
         for each_key, each_value in self.stack_parameter_updates.items():
             if each_key == "ApiDefinitionVersion":
@@ -109,6 +110,20 @@ class CreateOrUpdateCloudFormationStackDeployStepAction(object):
             
             new_parameter_list = []
             new_parameter_list.extend(required_parameter_list)
+            
+            for each_key, each_value in self.stack_parameter_defaults.items():
+                
+                param_already_specified = False
+                for each_parameter_dict in response["Stacks"][0]["Parameters"]:
+                    if each_parameter_dict["ParameterKey"] == each_key:
+                        param_already_specified = True
+                        break
+                
+                if not param_already_specified:
+                    new_parameter_list.append({
+                        "ParameterKey": each_key,
+                        "ParameterValue": each_value
+                    })
             
             for each_parameter_dict in response["Stacks"][0]["Parameters"]:
                 if each_parameter_dict["ParameterKey"] in required_params_map:
