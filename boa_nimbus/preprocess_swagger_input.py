@@ -189,6 +189,8 @@ class PreprocessSwaggerInputBuildStepAction(object):
                 apig_responses_def[lambda_direct_catchall_error_regex_format] = catchall_error_response
         
             response_keys = list(responses_dict.keys())
+            
+            produces_list = each_method_def.get("produces", [])
         
             for each_response_key in response_keys:
             
@@ -239,11 +241,16 @@ class PreprocessSwaggerInputBuildStepAction(object):
                         ",".join(cors_headers_list)
                     )
                     response_parameters["method.response.header.Access-Control-Allow-Origin"] = cors_allow_origin_string
-                
+                    
+                    default_content_type_plain = "application/json"
+                    
+                    if len(produces_list) == 1:
+                        default_content_type_plain = produces_list[0]
+                    
                     default_content_type_value = "'{}'".format(
-                        "application/json"
+                        default_content_type_plain
                     )
-                
+                    
                     response_parameters["method.response.header.Content-Type"] = response_parameters.get("method.response.header.Content-Type", default_content_type_value)
                 
                     if "x-boa-cors-max-age" in input_template:
